@@ -1,6 +1,5 @@
 package com.mds.crud.interfaces.api;
 
-import com.mds.crud.exception.FunctionPatternException;
 import com.mds.error.handler.exception.GeneralException;
 import jakarta.validation.Valid;
 import java.util.Map;
@@ -45,7 +44,7 @@ public interface PatternApi<R, D> {
    *
    * @param params The params.
    * @return The response DTO.
-   * @throws FunctionPatternException If an error occurs.
+   * @throws GeneralException If an error occurs.
    */
   @ResponseStatus(HttpStatus.OK)
   @GetMapping(value = "/filter", produces = {MediaType.APPLICATION_JSON_VALUE})
@@ -56,7 +55,7 @@ public interface PatternApi<R, D> {
    *
    * @param id The id of the pattern.
    * @return The response DTO.
-   * @throws FunctionPatternException If an error occurs.
+   * @throws GeneralException If an error occurs.
    */
   @ResponseStatus(HttpStatus.OK)
   @GetMapping(value = "/{id}", produces = {MediaType.APPLICATION_JSON_VALUE})
@@ -67,7 +66,7 @@ public interface PatternApi<R, D> {
    *
    * @param dto The DTO of the pattern.
    * @return The id of the inserted pattern.
-   * @throws FunctionPatternException If an error occurs.
+   * @throws GeneralException If an error occurs.
    */
   @ResponseStatus(HttpStatus.CREATED)
   @PostMapping(produces = {MediaType.APPLICATION_JSON_VALUE})
@@ -78,7 +77,7 @@ public interface PatternApi<R, D> {
    *
    * @param dto The DTO of the pattern.
    * @return The id of the updated pattern.
-   * @throws FunctionPatternException If an error occurs.
+   * @throws GeneralException If an error occurs.
    */
   @ResponseStatus(HttpStatus.OK)
   @PutMapping(produces = {MediaType.APPLICATION_JSON_VALUE})

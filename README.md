@@ -128,6 +128,79 @@ This gives you `GET /users`, `GET /users/filter`, `GET /users/{id}`, `POST /user
 
 ---
 
+## Integration modes
+
+The library serves two architecture styles from the same engine:
+
+### Layered / MVC
+
+Use the full stack shown above: `PatternResource` at the REST edge +
+`PatternService` + `JpaSpecificationRepository`. `PatternResource` is meant
+for simple, unscoped CRUD endpoints — applications with nested/authorized
+contracts should keep their own controllers and call the service directly.
+
+### Hexagonal (ports & adapters)
+
+`PatternServiceApi` also extends **`CrudOperations<D, R>`**, a framework-free
+surface whose signatures only use library types (`D`, `R`,
+`PageableParamDTO`), `Map` and `Long` — no `org.springframework.data` types
+leak through. An output adapter can implement an application output port by
+delegating to it without importing Spring Data:
+
+```java
+@Repository
+public class UserPersistenceAdapter implements UserStore {  // application port
+
+  private final UserCrudService crud;  // extends PatternService
+
+  public UserPersistenceAdapter(UserCrudService crud) { this.crud = crud; }
+
+  public UserModel save(UserModel model) {
+    UserDTO dto = mapper.toDto(model);
+    UserDTO saved = model.id() == null
+        ? crud.insertAndReturn(dto)
+        : crud.updateAndReturn(dto);
+    return mapper.toModel(saved);
+  }
+
+  public PageResult<UserModel> pageByOwner(long ownerId, int page, int size) {
+    var envelope = crud.findAllByFilters(
+        Map.of("ownerId", ownerId),
+        PageableParamDTO.builder().pageNumber(page).limit(size).build());
+    return PageResult.of(envelope.getContent().stream().map(mapper::toModel).toList(),
+        envelope.getPageable());
+  }
+}
+```
+
+Adapter-facing operations: `findAll(PageableParamDTO)`,
+`findAllByFilters(Map, PageableParamDTO)`, `findDtoById`,
+`insertAndReturn`, `updateAndReturn`, `delete`, `existsById`.
+
+### DTOs can be records
+
+`AbstractEntityBase` builds record DTOs through their canonical
+constructor, mapping components by name — so application ports can keep
+immutable DTOs instead of mutable beans:
+
+```java
+public record UserDTO(Long id, String name, String email) { }
+```
+
+Bean-style DTOs continue to work unchanged; the copy engine tolerates
+primitive↔wrapper mismatches in both directions and skips `null` values
+(merge semantics on update).
+
+### Update merge semantics
+
+`update(dto)` / `updateAndReturn(dto)` resolve the entity id from the DTO:
+when the record exists, the DTO is merged onto the managed entity —
+fields absent from the DTO (`@Version`, audit columns, associations not
+mapped in the DTO) are **preserved**. Unknown identifiers still fail the
+save validation.
+
+---
+
 ## Lifecycle Hooks
 
 | Hook | When |
@@ -153,11 +226,14 @@ Query params (excluding `_page`, `_limit`, `_sort`) are automatically converted 
 
 ---
 
-## Dead code (pending cleanup)
+## Publishing
 
-The following classes under `com.mds.crud.utils.*` and `com.mds.crud.interfaces.*` are now unused after migration to `shared-core-lib` equivalents:
-
-- `CollectionUtils`, `FunctionUtils`, `ObjectUtils`, `ReflectionUtils`
-- `ExecutableObject`, `ExecutableVoid`
-- `FunctionPatternException` (use `ExecutableException` from comm-pattern)
-- `EnumerationPattern` (only used by `TypeEnum` — over-abstraction)
+The library inherits `mds-platform` as its Maven parent, which manages
+every MDS dependency version through the `mds.version` property and the
+Reposilite `distributionManagement` (releases + snapshots). `mvn deploy`
+publishes to the artifact repository configured by `MDS_REPOSILITE_URL`
+with credentials resolved from `settings.xml`
+(`mds-reposilite-releases` / `mds-reposilite-snapshots` server ids). The
+`publish` GitHub workflow builds the sibling dependencies
+(`mds-platform`, `shared-core-lib`, `spring-error-pattern`) and deploys
+this artifact.

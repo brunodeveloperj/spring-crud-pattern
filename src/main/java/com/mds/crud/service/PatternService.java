@@ -5,11 +5,13 @@ import com.mds.crud.base.AbstractEntityBase;
 import com.mds.crud.base.AbstractResponseDTOBase;
 import com.mds.crud.base.AbstractServiceBase;
 import com.mds.crud.dto.general.PageableDTO;
+import com.mds.crud.dto.general.PageableParamDTO;
 import com.mds.crud.interfaces.JpaSpecificationRepository;
 import com.mds.crud.interfaces.api.PatternServiceApi;
 import com.mds.crud.keys.CrudKeys;
 import com.mds.shared.core.pattern.utils.FunctionUtils;
 import com.mds.error.handler.exception.GeneralException;
+import java.lang.reflect.Field;
 import java.util.Map;
 import java.util.Objects;
 import java.util.Optional;
@@ -17,6 +19,7 @@ import java.util.stream.Collectors;
 import org.springframework.dao.EmptyResultDataAccessException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
+import org.springframework.util.ReflectionUtils;
 
 
 /**
@@ -54,10 +57,44 @@ public class PatternService<E extends AbstractEntityBase<E, D>, R extends Abstra
     final Page<E> pageEntity = getRepository().findAll(pageable);
 
     // Converts the entities to DTOs.
+    return toResponse(pageEntity);
+  }
+
+  /**
+   * Finds a page of entities using library-typed pagination, the
+   * framework-free surface for hexagonal output adapters.
+   *
+   * @param params page/limit/sort descriptor; {@code null} falls back to
+   *               the defaults (page 0, size 10, sort by id).
+   * @return The paginated response envelope.
+   */
+  @Override
+  public R findAll(PageableParamDTO params) {
+    return findAll(toPageable(params));
+  }
+
+  /**
+   * Finds a page of entities applying map-driven filters, keeping the
+   * pagination descriptor outside the filter map.
+   *
+   * @param filters attribute filters; may be {@code null} or empty.
+   * @param params  page/limit/sort descriptor; {@code null} uses defaults.
+   * @return The paginated response envelope.
+   */
+  @Override
+  public R findAllByFilters(Map<String, Object> filters, PageableParamDTO params) {
+    final Page<E> pageEntity = getRepository().findAll(validateParams(filters), toPageable(params));
+    return toResponse(pageEntity);
+  }
+
+  private Pageable toPageable(PageableParamDTO params) {
+    return Objects.requireNonNullElse(params, new PageableParamDTO()).convertToPageable();
+  }
+
+  private R toResponse(Page<E> pageEntity) {
     R responseDTO = generateNewInstanceResponseDTO();
     responseDTO.setPageable(PageableDTO.compute(pageEntity.getTotalElements(), pageEntity.getPageable().getPageSize(), pageEntity.getPageable()));
     responseDTO.setContent(pageEntity.getContent().stream().map(AbstractEntityBase::copyPropertiesToDTO).collect(Collectors.toList()));
-
     return responseDTO;
   }
 
@@ -79,11 +116,18 @@ public class PatternService<E extends AbstractEntityBase<E, D>, R extends Abstra
     final Page<E> pageEntity = getRepository().findAll(validateParams(params), generatePageableInToParams(params));
 
     // Converts the entities to DTOs.
-    R responseDTO = generateNewInstanceResponseDTO();
-    responseDTO.setPageable(PageableDTO.compute(pageEntity.getTotalElements(), pageEntity.getPageable().getPageSize(), pageEntity.getPageable()));
-    responseDTO.setContent(pageEntity.getContent().stream().map(AbstractEntityBase::copyPropertiesToDTO).collect(Collectors.toList()));
+    return toResponse(pageEntity);
+  }
 
-    return responseDTO;
+  /**
+   * Finds an entity and returns it already converted to its DTO.
+   *
+   * @param id The ID of the entity to find.
+   * @return The DTO, or {@code null} when not found.
+   */
+  @Override
+  public D findDtoById(Long id) {
+    return getRepository().findById(id).map(AbstractEntityBase::copyPropertiesToDTO).orElse(null);
   }
 
   /**
@@ -167,15 +211,31 @@ public class PatternService<E extends AbstractEntityBase<E, D>, R extends Abstra
    */
   @Override
   public Long insert(D dto) throws GeneralException {
+    return doInsert(dto).getId();
+  }
+
+  /**
+   * Inserts an entity and returns the persisted DTO, identifier included.
+   *
+   * @param dto The DTO containing the entity data.
+   * @return The persisted DTO.
+   * @throws GeneralException If an error occurs during the insert operation.
+   */
+  @Override
+  public D insertAndReturn(D dto) throws GeneralException {
+    return doInsert(dto).copyPropertiesToDTO();
+  }
+
+  private E doInsert(D dto) throws GeneralException {
     doBeforeInsert(dto);
     // Creates a new entity instance and copies the data from the DTO.
     final var entity = generateNewInstanceEntity().copyPropertiesToEntity(dto);
 
     // Saves the entity to the database.
-    final var entityId = save(entity);
+    save(entity);
 
-    doAfterInsert(dto, entityId);
-    return entityId;
+    doAfterInsert(dto, entity.getId());
+    return entity;
   }
 
   /**
@@ -216,13 +276,65 @@ public class PatternService<E extends AbstractEntityBase<E, D>, R extends Abstra
    */
   @Override
   public Long update(D dto) throws GeneralException {
+    return doUpdate(dto).getId();
+  }
+
+  /**
+   * Updates an entity and returns the persisted DTO.
+   *
+   * @param dto The DTO containing the entity data.
+   * @return The persisted DTO.
+   * @throws GeneralException If an error occurs during the update operation.
+   */
+  @Override
+  public D updateAndReturn(D dto) throws GeneralException {
+    return doUpdate(dto).copyPropertiesToDTO();
+  }
+
+  private E doUpdate(D dto) throws GeneralException {
     doBeforeUpdate(dto);
 
     // Updates the entity using the `copyPropertiesToEntity()` method.
-    final var entityId = save(generateNewInstanceEntity().copyPropertiesToEntity(dto));
+    final var entity = resolveEntityForUpdate(dto);
+    final var entityId = save(entity);
 
     doAfterUpdate(dto, entityId);
-    return entityId;
+    return entity;
+  }
+
+  /**
+   * Resolves the entity to persist for an update. When the DTO carries an
+   * existing identifier, the managed entity is loaded and the DTO properties
+   * are merged onto it — null values are skipped by the copy engine, so
+   * fields absent from the DTO (version, audit columns, associations) are
+   * preserved. Otherwise a new entity is built from the DTO, keeping the
+   * previous behaviour (the save validation rejects unknown identifiers).
+   *
+   * @param dto The DTO containing the entity data.
+   * @return The entity to save.
+   */
+  protected E resolveEntityForUpdate(D dto) {
+    final Long id = extractDtoId(dto);
+    if (id != null) {
+      final Optional<E> persisted = getRepository().findById(id);
+      if (persisted.isPresent()) {
+        return persisted.get().copyPropertiesToEntity(dto);
+      }
+    }
+    return generateNewInstanceEntity().copyPropertiesToEntity(dto);
+  }
+
+  private Long extractDtoId(D dto) {
+    if (dto == null) {
+      return null;
+    }
+    final Field field = ReflectionUtils.findField(dto.getClass(), "id");
+    if (field == null) {
+      return null;
+    }
+    ReflectionUtils.makeAccessible(field);
+    final Object value = ReflectionUtils.getField(field, dto);
+    return value instanceof Number number ? number.longValue() : null;
   }
 
   /**

@@ -1,0 +1,16 @@
+<settings xmlns="http://maven.apache.org/SETTINGS/1.2.0">
+  <servers>
+    <server><id>mds-reposilite-releases</id><username>${env.MDS_REPOSILITE_USERNAME}</username><password>${env.MDS_REPOSILITE_PASSWORD}</password></server>
+    <server><id>mds-reposilite-snapshots</id><username>${env.MDS_REPOSILITE_USERNAME}</username><password>${env.MDS_REPOSILITE_PASSWORD}</password></server>
+  </servers>
+  <profiles>
+    <profile>
+      <id>mds-artifacts</id>
+      <repositories>
+        <repository><id>mds-reposilite-releases</id><url>${env.MDS_REPOSILITE_URL}/releases</url><releases><enabled>true</enabled></releases><snapshots><enabled>false</enabled></snapshots></repository>
+        <repository><id>mds-reposilite-snapshots</id><url>${env.MDS_REPOSILITE_URL}/snapshots</url><releases><enabled>false</enabled></releases><snapshots><enabled>true</enabled></snapshots></repository>
+      </repositories>
+    </profile>
+  </profiles>
+  <activeProfiles><activeProfile>mds-artifacts</activeProfile></activeProfiles>
+</settings>

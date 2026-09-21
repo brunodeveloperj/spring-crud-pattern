@@ -6,6 +6,7 @@ import static com.mds.shared.core.pattern.utils.ObjectUtils.nonNull;
 import static com.mds.crud.format.FormatValueUtil.convertStringToSort;
 
 import com.fasterxml.jackson.annotation.JsonProperty;
+import com.google.gson.annotations.SerializedName;
 import lombok.AllArgsConstructor;
 import lombok.Builder;
 import lombok.Data;
@@ -24,9 +25,9 @@ import org.springframework.data.domain.Pageable;
 @Data @Builder @NoArgsConstructor @AllArgsConstructor
 public class PageableParamDTO {
 
-  @JsonProperty("_limit") private Integer limit;
-  @JsonProperty("_page") private Integer pageNumber;
-  @JsonProperty("_sort") private String sorts;
+  @JsonProperty("_limit") @SerializedName("_limit") private Integer limit;
+  @JsonProperty("_page") @SerializedName("_page") private Integer pageNumber;
+  @JsonProperty("_sort") @SerializedName("_sort") private String sorts;
 
   public Pageable convertToPageable() {
     limit = nonNull(limit) ? limit : TENTH_INDEX;

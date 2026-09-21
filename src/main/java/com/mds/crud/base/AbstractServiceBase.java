@@ -9,7 +9,7 @@ import static com.mds.shared.core.pattern.utils.CollectionUtils.convertToList;
 import static com.mds.shared.core.pattern.utils.FunctionUtils.executableObject;
 import static com.mds.shared.core.pattern.utils.FunctionUtils.executableObjectNullSafe;
 import static com.mds.shared.core.pattern.utils.ObjectUtils.nonNull;
-import static com.mds.shared.core.helper.ConversionHelper.convertJsonToObject;
+import static com.mds.shared.core.helper.ConversionHelper.convertObjectWriteToJson;
 import static org.springframework.util.ReflectionUtils.makeAccessible;
 
 import com.mds.crud.annotation.InjectionDefault;
@@ -54,11 +54,28 @@ public abstract class AbstractServiceBase<E, R, D> {
    * This is the constructor of the `AbstractServiceBase` class.
    */
   protected AbstractServiceBase() {
-    ParameterizedType genericSuperClass = (ParameterizedType) getClass().getGenericSuperclass();
-    final List<Type> types = convertToList(genericSuperClass.getActualTypeArguments());
+    final List<Type> types = convertToList(resolveParameterizedSuperclass().getActualTypeArguments());
     entityClass = (Class<E>) types.get(ZERO_INDEX);
     responseDTOClass = (Class<R>) types.get(ONE_INDEX);
     dtoClass = (Class<D>) types.get(SECOND_INDEX);
+  }
+
+  /**
+   * Finds the parameterized superclass in the hierarchy, so intermediate
+   * service base classes keep working when the concrete service does not
+   * parameterize {@link AbstractServiceBase} directly.
+   */
+  private ParameterizedType resolveParameterizedSuperclass() {
+    Class<?> current = getClass();
+    while (current != null && !Object.class.equals(current)) {
+      Type genericSuperclass = current.getGenericSuperclass();
+      if (genericSuperclass instanceof ParameterizedType parameterized) {
+        return parameterized;
+      }
+      current = current.getSuperclass();
+    }
+    throw new IllegalStateException(
+        "Cannot resolve generic superclass for " + getClass().getName());
   }
 
   /**
@@ -192,7 +209,11 @@ public abstract class AbstractServiceBase<E, R, D> {
   }
 
   public Pageable generatePageableInToParams(Map<String, Object> params) {
-    return convertJsonToObject(params, PageableParamDTO.class).convertToPageable();
+    if (params == null) {
+      return new PageableParamDTO().convertToPageable();
+    }
+    final PageableParamDTO bound = convertObjectWriteToJson(params, PageableParamDTO.class);
+    return bound == null ? new PageableParamDTO().convertToPageable() : bound.convertToPageable();
   }
 
 }

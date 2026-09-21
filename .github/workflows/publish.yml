@@ -1,0 +1,65 @@
+name: Publish to MDS Reposilite
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+env:
+  MDS_REPOSILITE_URL: ${{ secrets.MDS_REPOSILITE_URL }}
+  MDS_REPOSILITE_USERNAME: ${{ secrets.MDS_REPOSILITE_USERNAME }}
+  MDS_REPOSILITE_PASSWORD: ${{ secrets.MDS_REPOSILITE_PASSWORD }}
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout spring-crud-pattern
+        uses: actions/checkout@v4
+
+      # Sibling MDS repositories are required because this library depends on
+      # snapshot versions that are not published yet. For private repositories,
+      # define a PAT as the MDS_GITHUB_TOKEN secret; for public repositories
+      # the default token is enough.
+      - name: Checkout mds-platform (parent POM)
+        uses: actions/checkout@v4
+        with:
+          repository: brunodeveloperj/mds-platform
+          ref: main
+          path: .deps/mds-platform
+          token: ${{ secrets.MDS_GITHUB_TOKEN || github.token }}
+
+      - name: Checkout shared-core-lib
+        uses: actions/checkout@v4
+        with:
+          repository: brunodeveloperj/shared-core-lib
+          ref: main
+          path: .deps/shared-core-lib
+          token: ${{ secrets.MDS_GITHUB_TOKEN || github.token }}
+
+      - name: Checkout spring-error-pattern
+        uses: actions/checkout@v4
+        with:
+          repository: brunodeveloperj/spring-error-pattern
+          ref: main
+          path: .deps/spring-error-pattern
+          token: ${{ secrets.MDS_GITHUB_TOKEN || github.token }}
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: maven
+
+      - name: Install mds-platform parent POM
+        run: mvn -B -N install -f .deps/mds-platform/pom.xml
+
+      - name: Install shared-core-lib
+        run: mvn -B install -DskipTests -s .mvn/reposilite-settings.xml -f .deps/shared-core-lib/pom.xml
+
+      - name: Install spring-error-pattern
+        run: mvn -B install -DskipTests -s .mvn/reposilite-settings.xml -f .deps/spring-error-pattern/pom.xml
+
+      - name: Build, test and deploy spring-crud-pattern
+        run: mvn -B deploy -s .mvn/reposilite-settings.xml

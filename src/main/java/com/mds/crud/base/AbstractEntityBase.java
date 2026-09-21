@@ -1,9 +1,9 @@
 package com.mds.crud.base;
 
 import static com.mds.shared.core.pattern.utils.CollectionUtils.convertToList;
+import static com.mds.shared.core.pattern.utils.FunctionUtils.executableObject;
 import static com.mds.shared.core.pattern.utils.FunctionUtils.executableObjectNullSafe;
 import static com.mds.shared.core.pattern.utils.ReflectionUtils.generateInstance;
-import static java.lang.reflect.Modifier.PRIVATE;
 import static org.springframework.util.ReflectionUtils.makeAccessible;
 import static org.springframework.util.ReflectionUtils.setField;
 
@@ -13,11 +13,14 @@ import com.mds.crud.interfaces.EnumerationPattern;
 import com.mds.crud.interfaces.api.EntityApi;
 import com.mds.crud.keys.CrudKeys;
 import java.lang.reflect.Field;
+import java.lang.reflect.Modifier;
 import java.lang.reflect.ParameterizedType;
+import java.lang.reflect.RecordComponent;
 import java.lang.reflect.Type;
 import java.util.ArrayList;
 import java.util.List;
 import org.springframework.beans.BeanUtils;
+import org.springframework.util.ClassUtils;
 
 /**
  * Abstract base that implements the bidirectional property-copying
@@ -26,6 +29,11 @@ import org.springframework.beans.BeanUtils;
  * <p>Subclasses inherit reflection-based copy logic that transfers field
  * values between entity and DTO instances, honouring
  * {@link IgnoreProperties} annotations.
+ *
+ * <p>The DTO type may be a mutable JavaBean (populated field by field) or a
+ * Java {@code record} (built through its canonical constructor from
+ * same-named entity properties), which makes immutable DTOs a first-class
+ * option for hexagonal application ports.
  *
  * @param <E> the entity type
  * @param <D> the DTO type
@@ -38,15 +46,92 @@ public abstract class AbstractEntityBase<E, D> implements EntityApi<E, D> {
   private final Class<D> dtoClass;
 
   protected AbstractEntityBase() {
-    ParameterizedType genericSuperClass = (ParameterizedType) getClass().getGenericSuperclass();
-    final List<Type> types = convertToList(genericSuperClass.getActualTypeArguments());
-    dtoClass = (Class<D>) types.get(CrudKeys.ONE_INDEX);
+    dtoClass = (Class<D>) resolveTypeArgument(CrudKeys.ONE_INDEX);
+  }
+
+  /**
+   * Resolves a generic type argument walking up the class hierarchy, so
+   * intermediate entity base classes keep working when the concrete class
+   * does not parameterize {@link AbstractEntityBase} directly.
+   */
+  private Type resolveTypeArgument(int index) {
+    Class<?> current = getClass();
+    while (current != null && !Object.class.equals(current)) {
+      Type genericSuperclass = current.getGenericSuperclass();
+      if (genericSuperclass instanceof ParameterizedType parameterized
+          && parameterized.getActualTypeArguments().length > index) {
+        return parameterized.getActualTypeArguments()[index];
+      }
+      current = current.getSuperclass();
+    }
+    throw new IllegalStateException(
+        "Cannot resolve DTO type argument for " + getClass().getName());
   }
 
   @Override
   public D copyPropertiesToDTO() {
+    if (dtoClass.isRecord()) {
+      return copyPropertiesToRecord();
+    }
     D dtoInstance = generateInstance(dtoClass);
     return copyPropertiesToDTO(dtoInstance);
+  }
+
+  /**
+   * Builds a record DTO through its canonical constructor, mapping every
+   * record component from the same-named entity property. Components whose
+   * entity counterpart is missing or type-incompatible receive the default
+   * value for their type (null, or the primitive default).
+   */
+  private D copyPropertiesToRecord() {
+    RecordComponent[] components = dtoClass.getRecordComponents();
+    Class<?>[] parameterTypes = new Class<?>[components.length];
+    Object[] arguments = new Object[components.length];
+    for (int i = 0; i < components.length; i++) {
+      parameterTypes[i] = components[i].getType();
+      arguments[i] = resolveComponentValue(components[i]);
+    }
+    return executableObject(
+        () -> dtoClass.getDeclaredConstructor(parameterTypes).newInstance(arguments));
+  }
+
+  private Object resolveComponentValue(RecordComponent component) {
+    Object value = validateInstanceOf(getFieldValueBySourceClass(component.getName(), getInstance()));
+    if (value != null && isAssignableValue(component.getType(), value.getClass())) {
+      return value;
+    }
+    return defaultValueFor(component.getType());
+  }
+
+  private static Object defaultValueFor(Class<?> type) {
+    if (!type.isPrimitive()) {
+      return null;
+    }
+    if (boolean.class.equals(type)) {
+      return false;
+    }
+    if (char.class.equals(type)) {
+      return '\0';
+    }
+    if (byte.class.equals(type)) {
+      return (byte) 0;
+    }
+    if (short.class.equals(type)) {
+      return (short) 0;
+    }
+    if (int.class.equals(type)) {
+      return 0;
+    }
+    if (long.class.equals(type)) {
+      return 0L;
+    }
+    if (float.class.equals(type)) {
+      return 0f;
+    }
+    if (double.class.equals(type)) {
+      return 0d;
+    }
+    return null;
   }
 
   /**
@@ -149,20 +234,47 @@ public abstract class AbstractEntityBase<E, D> implements EntityApi<E, D> {
   private void copyValueIntoField(Field field, Object source, Object target) {
     Object fieldValue = getFieldValueBySourceClass(field.getName(), source);
     final Object validatedValue = validateInstanceOf(fieldValue);
-    if (validatedValue != null && field.getType().getName().equalsIgnoreCase(validatedValue.getClass().getTypeName())) {
-      if(field.getModifiers() == PRIVATE) {
+    if (validatedValue != null && isAssignableValue(field.getType(), validatedValue.getClass())) {
+      if (Modifier.isPrivate(field.getModifiers())) {
         makeAccessible(field);
       }
       setField(field, target, validatedValue);
     }
   }
 
+  /**
+   * Checks whether a value type can be assigned into a field type, including
+   * primitive-to-wrapper equivalence (e.g. an {@code int} field accepts an
+   * {@code Integer} value).
+   */
+  private static boolean isAssignableValue(Class<?> fieldType, Class<?> valueType) {
+    if (fieldType.isPrimitive()) {
+      return ClassUtils.isAssignable(fieldType, valueType);
+    }
+    return fieldType.isAssignableFrom(valueType);
+  }
+
   private Object getFieldValueBySourceClass(final String name, Object source) {
     return executableObjectNullSafe(() -> {
-      Field field = source.getClass().getDeclaredField(name);
+      Field field = findFieldInHierarchy(source.getClass(), name);
+      if (field == null) {
+        return null;
+      }
       makeAccessible(field);
       return field.get(source);
     }, () -> null);
+  }
+
+  private static Field findFieldInHierarchy(Class<?> type, String name) {
+    Class<?> current = type;
+    while (current != null && !Object.class.equals(current)) {
+      try {
+        return current.getDeclaredField(name);
+      } catch (NoSuchFieldException ignored) {
+        current = current.getSuperclass();
+      }
+    }
+    return null;
   }
 
   private Object validateInstanceOf(Object value) {
